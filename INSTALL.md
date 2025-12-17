@@ -83,7 +83,8 @@ sudo apt-get install -y \
     cmake \
     git \
     pkg-config \
-    qt5-default \
+    qtchooser \
+    qt5-qmake \
     qtbase5-dev \
     qttools5-dev \
     qttools5-dev-tools \
