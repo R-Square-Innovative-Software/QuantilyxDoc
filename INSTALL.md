@@ -112,6 +112,10 @@ sudo dnf install -y \
     poppler-qt5-devel \
     openssl-devel \
     zlib-devel \
+    poppler \
+    poppler-utils \
+    poppler-devel \
+    poppler-data \
     tesseract-devel
 ```
 

@@ -32,9 +32,9 @@ LEGACY_BUILD="OFF"
 print_header() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║         QuantilyxDoc Build System v1.0                      ║"
+    echo "║         QuantilyxDoc Build System v1.0                       ║"
     echo "║         R² Innovative Software                               ║"
-    echo "║         \"Where innovation is the key to success\"            ║"
+    echo "║         \"Where innovation is the key to success\"             ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
