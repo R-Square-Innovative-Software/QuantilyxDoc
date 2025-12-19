@@ -14,6 +14,7 @@
 #include <QDateTime>
 #include <QMimeDatabase>
 #include <QDebug>
+#include <QDir>
 namespace QuantilyxDoc {
 
 class Document::Private {
@@ -35,6 +36,9 @@ public:
     qint64 fileSize;
     bool modified;
     int currentPageIndex;
+    QString formatVersion;
+    bool locked;
+    bool encrypted;
 };
 
 Document::Document(QObject* parent)
@@ -44,6 +48,8 @@ Document::Document(QObject* parent)
     // Set default creation date to now
     d->creationDate = QDateTime::currentDateTime();
     d->modificationDate = d->creationDate;
+    d->locked = false;
+    d->encrypted = false;
 }
 
 Document::~Document()
@@ -122,12 +128,22 @@ void Document::setModified(bool modified)
 
 bool Document::isLocked() const
 {
-    return false; // Base implementation - always unlocked
+    return d->locked;
+}
+
+void Document::setLocked(bool locked)
+{
+    d->locked = locked;
 }
 
 bool Document::isEncrypted() const
 {
-    return false; // Base implementation - not encrypted
+    return d->encrypted;
+}
+
+void Document::setEncrypted(bool encrypted)
+{
+    d->encrypted = encrypted;
 }
 
 Document::State Document::state() const
@@ -147,7 +163,12 @@ qint64 Document::fileSize() const
 
 QString Document::formatVersion() const
 {
-    return QString();
+    return d->formatVersion;
+}
+
+void Document::setFormatVersion(const QString& version)
+{
+    d->formatVersion = version;
 }
 
 bool Document::supportsFeature(const QString& feature) const
@@ -238,6 +259,36 @@ void Document::setFilePath(const QString& path)
     } else {
         d->fileSize = 0;
     }
+}
+
+void Document::setTitle(const QString& title)
+{
+    d->title = title;
+}
+
+void Document::setAuthor(const QString& author)
+{
+    d->author = author;
+}
+
+void Document::setSubject(const QString& subject)
+{
+    d->subject = subject;
+}
+
+void Document::setKeywords(const QStringList& keywords)
+{
+    d->keywords = keywords;
+}
+
+void Document::setCreationDate(const QDateTime& date)
+{
+    d->creationDate = date;
+}
+
+void Document::setModificationDate(const QDateTime& date)
+{
+    d->modificationDate = date;
 }
 
 } // namespace QuantilyxDoc

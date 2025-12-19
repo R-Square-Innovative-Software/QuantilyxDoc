@@ -110,8 +110,10 @@ QuantilyxDoc is a powerful, feature-rich document editor designed to give you co
 sudo apt-get install \
     build-essential \
     cmake \
-    qt5-default \
     qtbase5-dev \
+    qtchooser \
+    qt5-qmake \
+    qtbase5-dev-tools \
     qttools5-dev \
     libpoppler-qt5-dev \
     libssl-dev \
