@@ -124,7 +124,7 @@ sudo apt-get install \
     libdjvulibre-dev \
     libspectre-dev \
     libarchive-dev \
-    chmlib-dev
+    libchm-dev
 ```
 
 ### Building from Source
@@ -391,4 +391,3 @@ Our mission is to create the most powerful, user-friendly, and unrestricted docu
 **Built with ❤️ by R² Innovative Software**
 
 *"Where innovation is the key to success"*
->>>>>>> 0f8e866 (Initial commit)
