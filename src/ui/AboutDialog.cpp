@@ -8,7 +8,7 @@
  * (at your option) any later version.
  */
 #include "AboutDialog.h"
-#include "../core/Application.h" // Assuming Application provides version info
+#include "../core/Application.h" // To get app version, name, etc.
 #include "../core/Logger.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -17,19 +17,24 @@
 #include <QLabel>
 #include <QTextBrowser>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QIcon>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QApplication>
 #include <QTextStream>
 #include <QFile>
+#include <QDir>
+#include <QStandardPaths>
+#include <QMessageBox>
 #include <QDebug>
 
 namespace QuantilyxDoc {
 
 class AboutDialog::Private {
 public:
-    Private(AboutDialog* q_ptr) : q(q_ptr) {}
+    Private(AboutDialog* q_ptr)
+        : q(q_ptr) {}
 
     AboutDialog* q;
 
@@ -37,15 +42,30 @@ public:
     QLabel* logoLabel;
     QLabel* titleLabel;
     QLabel* versionLabel;
-    QLabel* companyLabel;
-    QLabel* mottoLabel;
-    QLabel* descriptionLabel;
+    QLabel* copyrightLabel;
     QLabel* licenseLabel;
-    QTextBrowser* licenseBrowser; // For scrolling license text
+    QTextBrowser* descriptionBrowser;
+    QTextBrowser* licenseBrowser;
+    QTabWidget* detailsTabWidget;
+    QTextBrowser* librariesBrowser;
+    QTextBrowser* thirdPartyBrowser;
     QDialogButtonBox* buttonBox;
     QPushButton* okButton;
-    QPushButton* creditsButton; // Optional button to show credits
-    QPushButton* thirdPartyButton; // Optional button to show third-party licenses
+    QPushButton* websiteButton;
+    QPushButton* repoButton;
+
+    // Data
+    QString appNameStr;
+    QString appVersionStr;
+    QString copyrightStr;
+    QString licenseStr;
+    QString descriptionStr;
+    QIcon logoIcon;
+    QString websiteUrlStr;
+    QString repoUrlStr;
+    QString authorStr;
+    QString sloganStr;
+    QList<LibraryInfo> librariesList;
 
     // Helper to create the main layout and widgets
     void createLayout();
@@ -55,93 +75,119 @@ public:
     void connectSignals();
 };
 
-void AboutDialog::Private::createLayout() {
+void AboutDialog::Private::createLayout()
+{
     // Main layout
     QVBoxLayout* mainLayout = new QVBoxLayout(q);
 
-    // Top section: Logo and Title
+    // Top Section: Logo and Text
     QHBoxLayout* topLayout = new QHBoxLayout();
+
+    // Logo
     logoLabel = new QLabel(q);
-    logoLabel->setPixmap(QIcon(":/images/QuantilyxDoc.png").pixmap(64, 64)); // Use a resource or path
     logoLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    // logoLabel->setPixmap(logoIcon.pixmap(64, 64)); // Set pixmap if icon is loaded
+    logoLabel->setPixmap(QIcon(":/icons/app_icon.png").pixmap(64, 64)); // Use a placeholder resource
     topLayout->addWidget(logoLabel);
 
-    // Title, Version, Company, Motto, Description
+    // Text Column
     QVBoxLayout* textLayout = new QVBoxLayout();
+
     titleLabel = new QLabel(q);
-    titleLabel->setTextFormat(Qt::RichText); // Allow HTML formatting
-    titleLabel->setOpenExternalLinks(true); // For any links in the title
-    titleLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    titleLabel->setTextFormat(Qt::RichText); // Allow HTML for formatting
+    titleLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     textLayout->addWidget(titleLabel);
 
     versionLabel = new QLabel(q);
-    versionLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    versionLabel->setAlignment(Qt::AlignLeft);
     textLayout->addWidget(versionLabel);
 
-    companyLabel = new QLabel(q);
-    companyLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
-    textLayout->addWidget(companyLabel);
+    copyrightLabel = new QLabel(q);
+    copyrightLabel->setAlignment(Qt::AlignLeft);
+    textLayout->addWidget(copyrightLabel);
 
-    mottoLabel = new QLabel(q);
-    mottoLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
-    mottoLabel->setStyleSheet("QLabel { font-style: italic; color: gray; }"); // Style the motto
-    textLayout->addWidget(mottoLabel);
-
-    descriptionLabel = new QLabel(q);
-    descriptionLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
-    descriptionLabel->setWordWrap(true); // Allow description to wrap
-    textLayout->addWidget(descriptionLabel);
+    // Slogan
+    QLabel* sloganLabel = new QLabel(q);
+    sloganLabel->setText(sloganStr);
+    sloganLabel->setAlignment(Qt::AlignLeft);
+    sloganLabel->setStyleSheet("QLabel { font-style: italic; color: gray; }"); // Style the slogan
+    textLayout->addWidget(sloganLabel);
 
     topLayout->addLayout(textLayout);
     topLayout->addStretch(); // Push content to the left
     mainLayout->addLayout(topLayout);
 
-    // License text (scrollable)
+    // Description (scrollable)
+    descriptionBrowser = new QTextBrowser(q);
+    descriptionBrowser->setOpenExternalLinks(true); // Allow links in description
+    descriptionBrowser->setMaximumHeight(80); // Limit height
+    descriptionBrowser->setReadOnly(true);
+    mainLayout->addWidget(descriptionBrowser);
+
+    // License (scrollable)
+    licenseLabel = new QLabel(tr("License:"), q);
+    mainLayout->addWidget(licenseLabel);
     licenseBrowser = new QTextBrowser(q);
-    licenseBrowser->setOpenExternalLinks(true); // Allow links in license text
-    licenseBrowser->setMaximumHeight(150); // Limit height, make it scrollable
+    licenseBrowser->setOpenExternalLinks(true);
+    licenseBrowser->setMaximumHeight(100); // Limit height
     licenseBrowser->setReadOnly(true);
     mainLayout->addWidget(licenseBrowser);
+
+    // Details Tabs
+    detailsTabWidget = new QTabWidget(q);
+    librariesBrowser = new QTextBrowser(q);
+    librariesBrowser->setOpenExternalLinks(true);
+    detailsTabWidget->addTab(librariesBrowser, tr("Libraries"));
+
+    thirdPartyBrowser = new QTextBrowser(q);
+    thirdPartyBrowser->setOpenExternalLinks(true);
+    detailsTabWidget->addTab(thirdPartyBrowser, tr("Third-Party"));
+
+    mainLayout->addWidget(detailsTabWidget);
 
     // Buttons
     buttonBox = new QDialogButtonBox(q);
     okButton = new QPushButton(tr("OK"), q);
-    creditsButton = new QPushButton(tr("Credits"), q); // Optional
-    thirdPartyButton = new QPushButton(tr("Licenses"), q); // Optional
+    websiteButton = new QPushButton(tr("Visit Website"), q);
+    repoButton = new QPushButton(tr("Source Code"), q);
 
     buttonBox->addButton(okButton, QDialogButtonBox::AcceptRole);
-    buttonBox->addButton(creditsButton, QDialogButtonBox::ActionRole);
-    buttonBox->addButton(thirdPartyButton, QDialogButtonBox::ActionRole);
+    buttonBox->addButton(websiteButton, QDialogButtonBox::ActionRole);
+    buttonBox->addButton(repoButton, QDialogButtonBox::ActionRole);
 
     mainLayout->addWidget(buttonBox);
 
     // Set dialog properties
-    q->setWindowTitle(tr("About QuantilyxDoc"));
-    q->setModal(true); // Modal dialog
-    q->setFixedSize(500, 400); // Fixed size for consistency, adjust as needed
+    q->setWindowTitle(tr("About %1").arg(appNameStr));
+    q->setModal(true);
+    q->setFixedSize(500, 600); // Fixed size, adjust as needed
 }
 
-void AboutDialog::Private::populateText() {
+void AboutDialog::Private::populateText()
+{
+    appNameStr = QApplication::applicationName();
+    appVersionStr = QApplication::applicationVersion();
+    copyrightStr = Application::copyrightNotice(); // Assuming Application class has this
+    authorStr = Application::organizationName(); // Or a dedicated author field
+    sloganStr = Application::applicationSlogan(); // Assuming Application class has this
+    websiteUrlStr = Application::websiteUrl(); // Assuming Application class has this
+    repoUrlStr = Application::repositoryUrl(); // Assuming Application class has this
+
     // Title
-    titleLabel->setText(tr("<h2>QuantilyxDoc</h2>"));
+    titleLabel->setText(QString("<h2>%1</h2>").arg(appNameStr));
 
-    // Version - Get from Application or a version header
-    versionLabel->setText(tr("Version %1").arg(Application::version()));
+    // Version
+    versionLabel->setText(tr("Version %1").arg(appVersionStr.isEmpty() ? "Unknown" : appVersionStr));
 
-    // Company
-    companyLabel->setText(tr("<b>R² Innovative Software</b>"));
-
-    // Motto
-    mottoLabel->setText(tr("\"Where innovation is the key to success\""));
+    // Copyright
+    copyrightLabel->setText(copyrightStr);
 
     // Description
-    descriptionLabel->setText(tr("Professional document editor for liberation and productivity."));
+    descriptionStr = tr("A professional, open-source document editor focused on liberation and advanced features.");
+    descriptionBrowser->setText(descriptionStr);
 
-    // License Text
-    // This could be loaded from a file or embedded as a string.
-    // For now, we'll embed a short GPL notice.
-    QString licenseText = tr(
-        "<h3>License</h3>"
+    // License Text (Example GPL V3)
+    licenseStr = tr(
         "<p>This program is free software: you can redistribute it and/or modify "
         "it under the terms of the GNU General Public License as published by "
         "the Free Software Foundation, either version 3 of the License, or "
@@ -151,36 +197,47 @@ void AboutDialog::Private::populateText() {
         "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the "
         "GNU General Public License for more details.</p>"
         "<p>You should have received a copy of the GNU General Public License "
-        "along with this program.  If not, see "
-        "<a href='https://www.gnu.org/licenses/gpl-3.0.html'>https://www.gnu.org/licenses/gpl-3.0.html</a>.</p>"
-        "<h3>Third-Party Libraries</h3>"
-        "<p>QuantilyxDoc uses the following third-party libraries:</p>"
-        "<ul>"
-        "<li>Qt Framework (LGPL v2.1)</li>"
-        "<li>Poppler (GPL v2 or later) - for PDF handling</li>"
-        "<li>OpenSSL (OpenSSL License) - for cryptographic features</li>"
-        "<li>Other libraries...</li>" // Add more as needed
-        "</ul>"
-        "<p>Specific license details for each library are included with the source code.</p>"
+        "along with this program. If not, see "
+        "<a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">https://www.gnu.org/licenses/gpl-3.0.html</a>.</p>"
     );
-    licenseBrowser->setHtml(licenseText);
+    licenseBrowser->setHtml(licenseStr);
+
+    // Libraries Info
+    QString libsText = "<h3>Libraries Used</h3><ul>";
+    libsText += "<li><a href=\"https://www.qt.io/\">Qt Framework</a> (LGPL v3)</li>";
+    libsText += "<li><a href=\"https://poppler.freedesktop.org/\">Poppler</a> (GPL/AGPL/MPL)</li>";
+    libsText += "<li><a href=\"https://www.libsdl.org/\">SDL2</a> (zlib)</li>";
+    libsText += "<li><a href=\"https://libzip.org/\">libzip</a> (BSD-3-Clause)</li>";
+    libsText += "<li><a href=\"https://tesseract-ocr.github.io/\">Tesseract OCR</a> (Apache 2.0)</li>";
+    libsText += "<li><a href=\"https://github.com/chriskohlhoff/asio\">Asio</a> (Boost Software License)</li>";
+    libsText += "<li><a href=\"https://www.boost.org/\">Boost</a> (Boost Software License)</li>";
+    // Add more as integrated
+    libsText += "</ul>";
+    librariesBrowser->setHtml(libsText);
+
+    // Third Party (could be same as libraries or separate e.g. for icons/themes)
+    QString thirdPartyText = tr("<h3>Third-Party Assets</h3><p>Includes icons from the Tango Desktop Project (Public Domain).</p>");
+    thirdPartyBrowser->setHtml(thirdPartyText);
+
+    LOG_DEBUG("AboutDialog: Populated text fields.");
 }
 
-void AboutDialog::Private::connectSignals() {
-    // Connect the OK button to accept the dialog
+void AboutDialog::Private::connectSignals()
+{
     connect(okButton, &QPushButton::clicked, q, &QDialog::accept);
-
-    // Connect optional buttons (stubs)
-    connect(creditsButton, &QPushButton::clicked, [this]() {
-        // Show a simple message box or another dialog with credits
-        LOG_INFO("AboutDialog: Credits button clicked.");
-        // QMessageBox::information(q, tr("Credits"), tr("Contributors and translators..."));
+    connect(websiteButton, &QPushButton::clicked, [this]() {
+        if (!websiteUrlStr.isEmpty()) {
+            QDesktopServices::openUrl(QUrl(websiteUrlStr));
+        } else {
+            QMessageBox::information(q, tr("Info"), tr("Website URL is not set."));
+        }
     });
-
-    connect(thirdPartyButton, &QPushButton::clicked, [this]() {
-        // Show a dialog or expand the text browser to show third-party licenses
-        LOG_INFO("AboutDialog: Third-party licenses button clicked.");
-        // QMessageBox::information(q, tr("Licenses"), tr("Licenses for third-party libraries..."));
+    connect(repoButton, &QPushButton::clicked, [this]() {
+        if (!repoUrlStr.isEmpty()) {
+            QDesktopServices::openUrl(QUrl(repoUrlStr));
+        } else {
+            QMessageBox::information(q, tr("Info"), tr("Repository URL is not set."));
+        }
     });
 }
 
@@ -198,6 +255,165 @@ AboutDialog::AboutDialog(QWidget* parent)
 AboutDialog::~AboutDialog()
 {
     LOG_INFO("AboutDialog destroyed.");
+}
+
+void AboutDialog::setAppName(const QString& name)
+{
+    d->appNameStr = name;
+    d->titleLabel->setText(QString("<h2>%1</h2>").arg(name));
+    setWindowTitle(tr("About %1").arg(name));
+}
+
+QString AboutDialog::appName() const
+{
+    return d->appNameStr;
+}
+
+void AboutDialog::setAppVersion(const QString& version)
+{
+    d->appVersionStr = version;
+    d->versionLabel->setText(tr("Version %1").arg(version));
+}
+
+QString AboutDialog::appVersion() const
+{
+    return d->appVersionStr;
+}
+
+void AboutDialog::setCopyright(const QString& copyright)
+{
+    d->copyrightStr = copyright;
+    d->copyrightLabel->setText(copyright);
+}
+
+QString AboutDialog::copyright() const
+{
+    return d->copyrightStr;
+}
+
+void AboutDialog::setLicense(const QString& license)
+{
+    d->licenseStr = license;
+    d->licenseBrowser->setHtml(license);
+}
+
+QString AboutDialog::license() const
+{
+    return d->licenseStr;
+}
+
+void AboutDialog::setDescription(const QString& description)
+{
+    d->descriptionStr = description;
+    d->descriptionBrowser->setText(description);
+}
+
+QString AboutDialog::description() const
+{
+    return d->descriptionStr;
+}
+
+void AboutDialog::setLogo(const QIcon& icon)
+{
+    d->logoIcon = icon;
+    d->logoLabel->setPixmap(icon.pixmap(64, 64)); // Or use a size from settings
+}
+
+QIcon AboutDialog::logo() const
+{
+    return d->logoIcon;
+}
+
+void AboutDialog::addLibrary(const QString& name, const QString& version, const QString& license, const QString& homepage, const QString& description)
+{
+    LibraryInfo info;
+    info.name = name;
+    info.version = version;
+    info.license = license;
+    info.homepage = homepage;
+    info.description = description;
+    d->librariesList.append(info);
+
+    // Update the libraries text browser
+    QString currentText = d->librariesBrowser->toHtml();
+    QString newText = QString("<li><a href=\"%1\">%2</a> (%3) - %4</li>")
+                          .arg(homepage, name, version, license);
+    // This is a simplistic way to append. A better way is to rebuild the entire list.
+    // For now, we'll rebuild.
+    QString libsText = "<h3>Libraries Used</h3><ul>";
+    for (const auto& lib : d->librariesList) {
+        libsText += QString("<li><a href=\"%1\">%2</a> (%3) - %4</li>")
+                        .arg(lib.homepage, lib.name, lib.version, lib.license);
+    }
+    libsText += "</ul>";
+    d->librariesBrowser->setHtml(libsText);
+    LOG_DEBUG("AboutDialog: Added library '" << name << "' to list.");
+}
+
+QList<LibraryInfo> AboutDialog::libraries() const
+{
+    return d->librariesList;
+}
+
+void AboutDialog::setLibraries(const QList<LibraryInfo>& libraries)
+{
+    d->librariesList = libraries;
+    // Rebuild the libraries text browser content
+    QString libsText = "<h3>Libraries Used</h3><ul>";
+    for (const auto& lib : d->librariesList) {
+        libsText += QString("<li><a href=\"%1\">%2</a> (%3) - %4</li>")
+                        .arg(lib.homepage, lib.name, lib.version, lib.license);
+    }
+    libsText += "</ul>";
+    d->librariesBrowser->setHtml(libsText);
+    LOG_DEBUG("AboutDialog: Set " << libraries.size() << " libraries in list.");
+}
+
+QString AboutDialog::websiteUrl() const
+{
+    return d->websiteUrlStr;
+}
+
+void AboutDialog::setWebsiteUrl(const QString& url)
+{
+    d->websiteUrlStr = url;
+}
+
+QString AboutDialog::repositoryUrl() const
+{
+    return d->repoUrlStr;
+}
+
+void AboutDialog::setRepositoryUrl(const QString& url)
+{
+    d->repoUrlStr = url;
+}
+
+QString AboutDialog::author() const
+{
+    return d->authorStr;
+}
+
+void AboutDialog::setAuthor(const QString& author)
+{
+    d->authorStr = author;
+}
+
+QString AboutDialog::slogan() const
+{
+    return d->sloganStr;
+}
+
+void AboutDialog::setSlogan(const QString& slogan)
+{
+    d->sloganStr = slogan;
+    // Update the slogan label if it exists
+    // Find the slogan label in the layout and update its text.
+    // This is cumbersome with the current setup. A better way is to store a pointer to it in Private.
+    // QLabel* sloganLabel = ...; // Need to find or store pointer
+    // sloganLabel->setText(slogan);
+    // For now, we'll just store the value. It's set during populateText.
+    LOG_WARN("AboutDialog::setSlogan: Slogan is set during initialization/populateText. Changing it here requires updating the QLabel manually.");
 }
 
 } // namespace QuantilyxDoc

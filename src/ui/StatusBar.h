@@ -21,12 +21,11 @@
 
 namespace QuantilyxDoc {
 
-class Document;
-class Page;
+class Document; // Forward declaration
 
 /**
  * @brief Custom status bar displaying document information, page numbers, zoom level, etc.
- *
+ * 
  * Provides real-time feedback on document state, current page, zoom level,
  * rendering progress, and other relevant information. Integrates with
  * Document, DocumentView, and other core systems.
@@ -114,6 +113,25 @@ public:
     void clearMessage() override;
 
     /**
+     * @brief Set the progress value for the progress bar.
+     * Shows/hides the progress bar based on the value.
+     * @param value Progress value (0-100).
+     */
+    void setProgress(int value);
+
+    /**
+     * @brief Get the current progress value.
+     * @return Progress value (0-100).
+     */
+    int progress() const;
+
+    /**
+     * @brief Show or hide the progress bar.
+     * @param visible Whether to show the progress bar.
+     */
+    void setProgressVisible(bool visible);
+
+    /**
      * @brief Show or hide the page number controls (spinbox, label).
      * @param visible Whether to show the controls.
      */
@@ -132,10 +150,28 @@ public:
     void setRotationControlsVisible(bool visible);
 
     /**
-     * @brief Update the status bar based on the current state of the associated document and view.
-     * This is called internally when states change, but can be called externally if needed.
+     * @brief Get the path of the current document being displayed.
+     * @return Document file path string.
      */
-    void updateStatus();
+    QString currentDocumentPath() const;
+
+    /**
+     * @brief Get the total page count of the current document.
+     * @return Page count.
+     */
+    int currentPageCount() const;
+
+    /**
+     * @brief Get the status of the current document (e.g., "Ready", "Loading", "Rendering").
+     * @return Status string.
+     */
+    QString documentStatus() const;
+
+    /**
+     * @brief Set the status of the current document.
+     * @param status Status string.
+     */
+    void setDocumentStatus(const QString& status);
 
 signals:
     /**
@@ -156,21 +192,35 @@ signals:
      */
     void rotationChanged(int degrees);
 
+    /**
+     * @brief Emitted when a long-running operation starts (e.g., document loading, OCR).
+     */
+    void operationStarted();
+
+    /**
+     * @brief Emitted when a long-running operation finishes.
+     */
+    void operationFinished();
+
+    /**
+     * @brief Emitted when the progress of a long-running operation changes.
+     * @param progress Progress percentage (0-100).
+     */
+    void progressChanged(int progress);
+
 private slots:
     void onPageSpinBoxValueChanged(int value);
     void onZoomSliderValueChanged(int value);
     void onRotateLeftClicked();
     void onRotateRightClicked();
+    void onOperationProgress(int progress); // For connecting to background tasks
 
 private:
     class Private;
     std::unique_ptr<Private> d;
 
-    // Helper to update the text of the page count label
     void updatePageCountLabel();
-    // Helper to update the text of the zoom label
     void updateZoomLabel();
-    // Helper to update the text of the rotation label
     void updateRotationLabel();
 };
 

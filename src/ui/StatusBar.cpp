@@ -16,22 +16,23 @@
 #include <QSlider>
 #include <QToolButton>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QTimer>
 #include <QApplication>
-#include <QPainter>
 #include <QDebug>
 
 namespace QuantilyxDoc {
 
 class StatusBar::Private {
 public:
-    Private(StatusBar* q_ptr) : q(q_ptr), document(nullptr), currentPageIndex(0), zoomLevel(1.0), rotation(0) {}
+    Private(StatusBar* q_ptr)
+        : q(q_ptr), document(nullptr), currentPageIndex(-1), zoomLevelVal(1.0), rotationVal(0), progressVal(-1) {}
 
     StatusBar* q;
     QPointer<Document> document; // Use QPointer for safety
 
     // Status bar widgets
-    QLabel* messageLabel; // For temporary messages
+    QLabel* messageLabel; // For temporary messages (handled by base QStatusBar)
     QLabel* pageLabel; // Static "Page:" label
     QSpinBox* pageSpinBox; // For selecting page
     QLabel* pageCountLabel; // Displays total pages (e.g., "/ 10")
@@ -42,113 +43,172 @@ public:
     QToolButton* rotateLeftButton; // Rotate -90 degrees
     QToolButton* rotateRightButton; // Rotate +90 degrees
     QLabel* rotationValueLabel; // Displays current rotation (e.g., "0°")
+    QProgressBar* progressBar; // For showing operation progress
+    QLabel* statusTextLabel; // For permanent status text (e.g., "Ready", "Rendering...")
 
     int currentPageIndex;
-    qreal zoomLevel;
-    int rotation; // 0, 90, 180, 270
+    qreal zoomLevelVal;
+    int rotationVal;
+    int progressVal; // -1 means hidden
 
-    // Temporary message timer
-    QTimer* messageTimer;
+    // Helper to setup the custom widgets and add them to the status bar
+    void setupCustomWidgets() {
+        // --- Permanent Status Text ---
+        statusTextLabel = new QLabel(tr("Ready"), q);
+        statusTextLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        statusTextLabel->setMinimumWidth(100); // Ensure some space for status text
+        q->addWidget(statusTextLabel); // Add to left side
 
-    // Helper to setup initial widgets
-    void setupWidgets();
+        // --- Page Controls ---
+        pageLabel = new QLabel(tr("Page:"), q);
+        pageLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        pageLabel->setMinimumWidth(40); // Ensure consistent width
+
+        pageSpinBox = new QSpinBox(q);
+        pageSpinBox->setRange(1, 1); // Will be updated by document
+        pageSpinBox->setValue(1);
+        pageSpinBox->setMinimumWidth(60); // Ensure consistent width
+        pageSpinBox->setAlignment(Qt::AlignCenter);
+
+        pageCountLabel = new QLabel(tr("/ 1"), q); // Will be updated by document
+        pageCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        pageCountLabel->setMinimumWidth(40); // Ensure consistent width
+
+        // Add page widgets as permanent items on the right
+        q->addPermanentWidget(pageLabel);
+        q->addPermanentWidget(pageSpinBox);
+        q->addPermanentWidget(pageCountLabel);
+
+        // --- Zoom Controls ---
+        zoomLabel = new QLabel(tr("Zoom:"), q);
+        zoomLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        zoomLabel->setMinimumWidth(40);
+
+        zoomSlider = new QSlider(Qt::Horizontal, q);
+        zoomSlider->setRange(10, 500); // 10% to 500%
+        zoomSlider->setValue(100); // Default 100%
+        zoomSlider->setTickPosition(QSlider::TicksBelow);
+        zoomSlider->setTickInterval(50);
+        zoomSlider->setMinimumWidth(100); // Ensure consistent width
+
+        zoomPercentLabel = new QLabel(tr("100%"), q);
+        zoomPercentLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        zoomPercentLabel->setMinimumWidth(40);
+
+        // Add zoom widgets as permanent items on the right
+        q->addPermanentWidget(zoomLabel);
+        q->addPermanentWidget(zoomSlider);
+        q->addPermanentWidget(zoomPercentLabel);
+
+        // --- Rotation Controls ---
+        rotationLabel = new QLabel(tr("Rotation:"), q);
+        rotationLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        rotationLabel->setMinimumWidth(60);
+
+        rotateLeftButton = new QToolButton(q);
+        rotateLeftButton->setText(tr("↺")); // Unicode for counter-clockwise arrow
+        rotateLeftButton->setToolTip(tr("Rotate Left (90° CCW)"));
+        rotateLeftButton->setAutoRaise(true);
+
+        rotateRightButton = new QToolButton(q);
+        rotateRightButton->setText(tr("↻")); // Unicode for clockwise arrow
+        rotateRightButton->setToolTip(tr("Rotate Right (90° CW)"));
+        rotateRightButton->setAutoRaise(true);
+
+        rotationValueLabel = new QLabel(tr("0°"), q);
+        rotationValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        rotationValueLabel->setMinimumWidth(30);
+
+        // Add rotation widgets as permanent items on the right
+        q->addPermanentWidget(rotationLabel);
+        q->addPermanentWidget(rotateLeftButton);
+        q->addPermanentWidget(rotateRightButton);
+        q->addPermanentWidget(rotationValueLabel);
+
+        // --- Progress Bar (initially hidden) ---
+        progressBar = new QProgressBar(q);
+        progressBar->setVisible(false); // Hidden by default
+        progressBar->setMaximumWidth(150); // Limit width
+        progressBar->setTextVisible(true);
+        // Add progress bar as a permanent item, likely near the right
+        q->addPermanentWidget(progressBar);
+
+        // Connect signals
+        QObject::connect(pageSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+                         q, [this](int value) { emit q->pageChanged(value - 1); }); // Emit 0-based index
+
+        QObject::connect(zoomSlider, &QSlider::valueChanged,
+                         q, [this](int value) {
+                             qreal newZoom = value / 100.0;
+                             setZoomLevel(newZoom);
+                             emit q->zoomLevelChanged(newZoom);
+                         });
+
+        QObject::connect(rotateLeftButton, &QToolButton::clicked,
+                         q, [this]() {
+                             int newRotation = (d->rotationVal - 90 + 360) % 360;
+                             setRotation(newRotation);
+                             emit q->rotationChanged(newRotation);
+                         });
+
+        QObject::connect(rotateRightButton, &QToolButton::clicked,
+                         q, [this]() {
+                             int newRotation = (d->rotationVal + 90) % 360;
+                             setRotation(newRotation);
+                             emit q->rotationChanged(newRotation);
+                         });
+
+        LOG_DEBUG("StatusBar: Custom widgets initialized.");
+    }
+
+    // Helper to update the page count label text
+    void updatePageCountLabel() {
+        if (document) {
+            pageCountLabel->setText(tr("/ %1").arg(document->pageCount()));
+        } else {
+            pageCountLabel->setText(tr("/ 0"));
+        }
+    }
+
+    // Helper to update the zoom percentage label text and slider value
+    void updateZoomLabel() {
+        int percent = qRound(zoomLevelVal * 100);
+        zoomPercentLabel->setText(tr("%1%").arg(percent));
+        zoomSlider->setValue(percent); // Sync slider to value
+    }
+
+    // Helper to update the rotation value label text and button states if needed
+    void updateRotationLabel() {
+        rotationValueLabel->setText(tr("%1°").arg(rotationVal));
+        // Could enable/disable buttons based on current rotation if desired
+        // rotateLeftButton->setEnabled(...);
+        // rotateRightButton->setEnabled(...);
+    }
+
+    // Helper to set zoom level (internal, updates slider and label)
+    void setZoomLevel(qreal zoom) {
+        if (zoom > 0) {
+            zoomLevelVal = zoom;
+            updateZoomLabel();
+        }
+    }
+
+    // Helper to set rotation (internal, updates label)
+    void setRotation(int degrees) {
+        if (degrees % 90 == 0) { // Only allow 90-degree increments
+            int normalizedDegrees = ((degrees % 360) + 360) % 360; // Normalize to 0-359
+            rotationVal = normalizedDegrees;
+            updateRotationLabel();
+        }
+    }
 };
-
-void StatusBar::Private::setupWidgets()
-{
-    // --- Message Label (Standard QStatusBar item) ---
-    // This is handled by the base QStatusBar class, but we can customize its behavior if needed.
-    // For now, we'll just use the standard showMessage/clearMessage.
-
-    // --- Page Controls ---
-    pageLabel = new QLabel(tr("Page:"), q);
-    pageLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    pageLabel->setMinimumWidth(40); // Ensure consistent width
-
-    pageSpinBox = new QSpinBox(q);
-    pageSpinBox->setRange(1, 1); // Will be updated by document
-    pageSpinBox->setValue(1);
-    pageSpinBox->setMinimumWidth(60); // Ensure consistent width
-    pageSpinBox->setAlignment(Qt::AlignCenter);
-
-    pageCountLabel = new QLabel(tr("/ 1"), q); // Will be updated by document
-    pageCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    pageCountLabel->setMinimumWidth(40); // Ensure consistent width
-
-    // --- Zoom Controls ---
-    zoomLabel = new QLabel(tr("Zoom:"), q);
-    zoomLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    zoomLabel->setMinimumWidth(40);
-
-    zoomSlider = new QSlider(Qt::Horizontal, q);
-    zoomSlider->setRange(10, 500); // 10% to 500%
-    zoomSlider->setValue(100); // Default 100%
-    zoomSlider->setTickPosition(QSlider::TicksBelow);
-    zoomSlider->setTickInterval(50);
-    zoomSlider->setMinimumWidth(100); // Ensure consistent width
-
-    zoomPercentLabel = new QLabel(tr("100%"), q);
-    zoomPercentLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    zoomPercentLabel->setMinimumWidth(40);
-
-    // --- Rotation Controls ---
-    rotationLabel = new QLabel(tr("Rotation:"), q);
-    rotationLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    rotationLabel->setMinimumWidth(60);
-
-    rotateLeftButton = new QToolButton(q);
-    rotateLeftButton->setText(tr("↺")); // Unicode for counter-clockwise arrow
-    rotateLeftButton->setToolTip(tr("Rotate Left (90° CCW)"));
-    rotateLeftButton->setAutoRaise(true);
-
-    rotateRightButton = new QToolButton(q);
-    rotateRightButton->setText(tr("↻")); // Unicode for clockwise arrow
-    rotateRightButton->setToolTip(tr("Rotate Right (90° CW)"));
-    rotateRightButton->setAutoRaise(true);
-
-    rotationValueLabel = new QLabel(tr("0°"), q);
-    rotationValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    rotationValueLabel->setMinimumWidth(30);
-
-    // Add widgets to status bar using insertWidget/addPermanentWidget
-    // Permanent widgets stay on the right
-    q->addPermanentWidget(pageLabel);
-    q->addPermanentWidget(pageSpinBox);
-    q->addPermanentWidget(pageCountLabel);
-
-    q->addPermanentWidget(zoomLabel);
-    q->addPermanentWidget(zoomSlider);
-    q->addPermanentWidget(zoomPercentLabel);
-
-    q->addPermanentWidget(rotationLabel);
-    q->addPermanentWidget(rotateLeftButton);
-    q->addPermanentWidget(rotateRightButton);
-    q->addPermanentWidget(rotationValueLabel);
-
-    // Connect signals
-    QObject::connect(pageSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                     q, &StatusBar::onPageSpinBoxValueChanged);
-
-    QObject::connect(zoomSlider, &QSlider::valueChanged,
-                     q, &StatusBar::onZoomSliderValueChanged);
-
-    QObject::connect(rotateLeftButton, &QToolButton::clicked,
-                     q, &StatusBar::onRotateLeftClicked);
-
-    QObject::connect(rotateRightButton, &QToolButton::clicked,
-                     q, &StatusBar::onRotateRightClicked);
-
-    LOG_DEBUG("StatusBar widgets initialized.");
-}
 
 StatusBar::StatusBar(QWidget* parent)
     : QStatusBar(parent)
     , d(new Private(this))
 {
-    d->setupWidgets();
-
-    // Initialize with no document
-    setDocument(nullptr);
+    d->setupCustomWidgets();
+    setDocument(nullptr); // Initialize with no document
 
     LOG_INFO("StatusBar initialized.");
 }
@@ -164,35 +224,33 @@ void StatusBar::setDocument(Document* doc)
 
     // Disconnect from old document signals if necessary
     if (d->document) {
-        // disconnect(d->document, ...);
+        // disconnect(d->document, &Document::currentPageChanged, ...);
+        // disconnect(d->document, &Document::pageCountChanged, ...);
     }
 
     d->document = doc; // Use QPointer
 
     if (doc) {
         // Connect to new document signals
-        connect(doc, &Document::closed, this, [this]() {
-            setDocument(nullptr); // Clear if document is closed elsewhere
-        });
-        connect(doc, &Document::currentPageChanged, this, [this](int index) {
-            setCurrentPage(index);
-        });
-        // Connect to page count changes to update spinbox range
-        // connect(doc, &Document::pageCountChanged, this, [this]() { updatePageCountLabel(); });
+        // connect(doc, &Document::currentPageChanged, this, [this](int index) {
+        //     setCurrentPage(index);
+        // });
+        // connect(doc, &Document::pageCountChanged, this, [this]() {
+        //     d->updatePageCountLabel();
+        // });
 
         // Update UI based on new document state
         d->pageSpinBox->setRange(1, doc->pageCount());
         d->pageSpinBox->setValue(doc->currentPageIndex() + 1); // 0-based to 1-based
-        updatePageCountLabel();
+        d->updatePageCountLabel();
         showMessage(tr("Loaded: %1").arg(doc->filePath()), 3000); // Show for 3 seconds
     } else {
         d->pageSpinBox->setRange(1, 1);
         d->pageSpinBox->setValue(1);
-        updatePageCountLabel();
+        d->updatePageCountLabel();
         showMessage(tr("Ready"), 2000);
     }
 
-    updateStatus();
     LOG_DEBUG("StatusBar set to document: " << (doc ? doc->filePath() : "nullptr"));
 }
 
@@ -203,21 +261,15 @@ Document* StatusBar::document() const
 
 void StatusBar::setCurrentPage(int index)
 {
-    if (d->document) {
-        int pageCount = d->document->pageCount();
-        if (index >= 0 && index < pageCount) {
-            int oldPage = d->currentPageIndex;
-            d->currentPageIndex = index;
-            d->pageSpinBox->setValue(index + 1); // Update spinbox (1-based)
-
-            if (oldPage != index) {
-                emit pageChanged(index);
-                LOG_DEBUG("StatusBar current page updated to " << index);
-            }
-        }
-    } else {
+    if (index >= 0) {
+        int oldPage = d->currentPageIndex;
         d->currentPageIndex = index;
         d->pageSpinBox->setValue(index + 1); // Update spinbox (1-based)
+
+        if (oldPage != index) {
+            // Signal is emitted by the spinbox's valueChanged signal connection
+            LOG_DEBUG("StatusBar current page updated to " << index);
+        }
     }
 }
 
@@ -229,14 +281,11 @@ int StatusBar::currentPage() const
 void StatusBar::setZoomLevel(qreal zoom)
 {
     if (zoom > 0) {
-        qreal oldZoom = d->zoomLevel;
-        d->zoomLevel = zoom;
-        int zoomPercent = qRound(zoom * 100);
-        d->zoomSlider->setValue(zoomPercent);
-        updateZoomLabel();
+        qreal oldZoom = d->zoomLevelVal;
+        d->setZoomLevel(zoom); // Use private helper
 
         if (!qFuzzyCompare(oldZoom, zoom)) {
-            emit zoomLevelChanged(zoom);
+            // Signal is emitted by the slider's valueChanged signal connection
             LOG_DEBUG("StatusBar zoom level updated to " << zoom);
         }
     }
@@ -244,32 +293,32 @@ void StatusBar::setZoomLevel(qreal zoom)
 
 qreal StatusBar::zoomLevel() const
 {
-    return d->zoomLevel;
+    return d->zoomLevelVal;
 }
 
 void StatusBar::setRotation(int degrees)
 {
     if (degrees % 90 == 0) { // Only allow 90-degree increments
-        int oldRotation = d->rotation;
-        int normalizedDegrees = ((degrees % 360) + 360) % 360; // Normalize to 0-359
-        d->rotation = normalizedDegrees;
-        updateRotationLabel();
+        int oldRotation = d->rotationVal;
+        d->setRotation(degrees); // Use private helper
 
-        if (oldRotation != normalizedDegrees) {
-            emit rotationChanged(normalizedDegrees);
-            LOG_DEBUG("StatusBar rotation updated to " << normalizedDegrees);
+        if (oldRotation != degrees) {
+            // Signal is emitted by the button's clicked signal connection
+            LOG_DEBUG("StatusBar rotation updated to " << degrees);
         }
     }
 }
 
 int StatusBar::rotation() const
 {
-    return d->rotation;
+    return d->rotationVal;
 }
 
 void StatusBar::showMessage(const QString& message, int timeoutMs)
 {
     QStatusBar::showMessage(message, timeoutMs);
+    // Update the permanent status text label too, maybe briefly?
+    // A more sophisticated approach might only update statusTextLabel for permanent statuses.
     LOG_DEBUG("StatusBar message: " << message << " (timeout: " << timeoutMs << "ms)");
 }
 
@@ -277,6 +326,43 @@ void StatusBar::clearMessage()
 {
     QStatusBar::clearMessage();
     LOG_DEBUG("StatusBar message cleared.");
+}
+
+void StatusBar::setProgress(int value)
+{
+    if (value >= 0 && value <= 100) {
+        d->progressVal = value;
+        d->progressBar->setValue(value);
+        bool wasVisible = d->progressBar->isVisible();
+        bool shouldBeVisible = value < 100; // Hide when at 100% (operation finished) or explicitly set to -1
+        if (wasVisible != shouldBeVisible) {
+            d->progressBar->setVisible(shouldBeVisible);
+        }
+        if (value < 100) {
+             emit operationStarted(); // Or use a dedicated progress signal?
+        } else {
+             emit operationFinished();
+        }
+        LOG_DEBUG("StatusBar progress set to " << value << "%");
+    } else if (value < 0) {
+        // Negative value hides the progress bar
+        d->progressVal = -1;
+        d->progressBar->setVisible(false);
+        emit operationFinished(); // Implies operation ended/cancelled
+        LOG_DEBUG("StatusBar progress bar hidden.");
+    }
+}
+
+int StatusBar::progress() const
+{
+    return d->progressVal;
+}
+
+void StatusBar::setProgressVisible(bool visible)
+{
+    d->progressBar->setVisible(visible);
+    if (!visible) d->progressVal = -1; // Reset internal state if hidden
+    LOG_DEBUG("StatusBar progress bar set to " << (visible ? "visible" : "hidden"));
 }
 
 void StatusBar::setPageControlsVisible(bool visible)
@@ -304,67 +390,34 @@ void StatusBar::setRotationControlsVisible(bool visible)
     LOG_DEBUG("StatusBar rotation controls set to " << (visible ? "visible" : "hidden"));
 }
 
-void StatusBar::updateStatus()
+QString StatusBar::currentDocumentPath() const
 {
+    return d->document ? d->document->filePath() : QString();
+}
+
+int StatusBar::currentPageCount() const
+{
+    return d->document ? d->document->pageCount() : 0;
+}
+
+QString StatusBar::documentStatus() const
+{
+    // This could reflect the state of the current document (e.g., "Loading", "Rendering", "Ready", "Modified")
+    // It might be updated by connecting to Document signals.
     if (d->document) {
-        // Update page count and current page display
-        d->pageSpinBox->setRange(1, d->document->pageCount());
-        d->pageSpinBox->setValue(d->document->currentPageIndex() + 1);
-        updatePageCountLabel();
-
-        // Other status updates could happen here if needed
+        // Example: Check if document is loading, rendering, etc.
+        // This requires signals from Document/DocumentView/RenderThread
+        // For now, use a placeholder or the permanent status label's text
+        return d->statusTextLabel->text();
     }
-    LOG_DEBUG("StatusBar status updated.");
+    return "No Document";
 }
 
-void StatusBar::onPageSpinBoxValueChanged(int value)
+void StatusBar::setDocumentStatus(const QString& status)
 {
-    // Value is 1-based, emit 0-based index
-    emit pageChanged(value - 1);
-    LOG_DEBUG("StatusBar page spinbox changed to " << value);
-}
-
-void StatusBar::onZoomSliderValueChanged(int value)
-{
-    // Value is percentage, convert to factor
-    qreal newZoom = value / 100.0;
-    setZoomLevel(newZoom);
-    updateZoomLabel(); // Ensure label is updated
-    LOG_DEBUG("StatusBar zoom slider changed to " << value << "%");
-}
-
-void StatusBar::onRotateLeftClicked()
-{
-    int newRotation = (d->rotation - 90 + 360) % 360;
-    setRotation(newRotation);
-    LOG_DEBUG("StatusBar rotate left clicked, new rotation: " << newRotation);
-}
-
-void StatusBar::onRotateRightClicked()
-{
-    int newRotation = (d->rotation + 90) % 360;
-    setRotation(newRotation);
-    LOG_DEBUG("StatusBar rotate right clicked, new rotation: " << newRotation);
-}
-
-void StatusBar::updatePageCountLabel()
-{
-    int count = d->document ? d->document->pageCount() : 0;
-    d->pageCountLabel->setText(tr("/ %1").arg(count));
-    LOG_DEBUG("StatusBar page count label updated to / " << count);
-}
-
-void StatusBar::updateZoomLabel()
-{
-    int zoomPercent = qRound(d->zoomLevel * 100);
-    d->zoomPercentLabel->setText(tr("%1%").arg(zoomPercent));
-    LOG_DEBUG("StatusBar zoom label updated to " << zoomPercent << "%");
-}
-
-void StatusBar::updateRotationLabel()
-{
-    d->rotationValueLabel->setText(tr("%1°").arg(d->rotation));
-    LOG_DEBUG("StatusBar rotation label updated to " << d->rotation << "°");
+    // Updates the permanent status text label
+    d->statusTextLabel->setText(status);
+    LOG_DEBUG("StatusBar document status set to: " << status);
 }
 
 } // namespace QuantilyxDoc

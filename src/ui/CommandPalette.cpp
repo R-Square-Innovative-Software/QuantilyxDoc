@@ -18,225 +18,225 @@
 #include <QLabel>
 #include <QKeyEvent>
 #include <QApplication>
-#include <QTimer>
+#include <QDesktopWidget>
 #include <QCompleter>
 #include <QStringListModel>
 #include <QPainter>
 #include <QStyleOption>
+#include <QTimer>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QDir>
+#include <QStandardPaths>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QFile>
+#include <QTextStream>
+#include <QSortFilterProxyModel>
 #include <QDebug>
 
 namespace QuantilyxDoc {
 
-// Forward declaration of Command structure
-struct Command {
-    QString id;
-    QString title;
-    QString category; // e.g., "File", "Edit", "View", "Tools"
-    QString description;
-    QString shortcut;
-    std::function<void()> handler; // Function to execute the command
-    QIcon icon; // Optional icon
-    int priority; // For sorting/search ranking
-
-    Command(const QString& i, const QString& t, const QString& c, const QString& d, const QString& s, std::function<void()> h, const QIcon& ic = QIcon(), int p = 0)
-        : id(i), title(t), category(c), description(d), shortcut(s), handler(std::move(h)), icon(ic), priority(p) {}
-};
-
 class CommandPalette::Private {
 public:
     Private(CommandPalette* q_ptr)
-        : q(q_ptr), searchDelayMs(300) {} // Delay for search throttling
+        : q(q_ptr), maxResultsVal(15), closeOnExecuteVal(true), isShownVal(false) {}
 
     CommandPalette* q;
     QLineEdit* searchLineEdit;
     QListWidget* resultsListWidget;
     QLabel* placeholderLabel;
-    QStringListModel* completerModel;
-    QCompleter* completer;
-
     QList<Command> allCommands;
-    QList<Command> filteredCommands; // Results of the current search
+    QHash<QString, Command> commandMap; // For fast lookup by ID
+    QStringListModel* listModel; // Model for the list widget
+    QSortFilterProxyModel* proxyModel; // Proxy model for filtering
+    QTimer* searchDebounceTimer; // Timer to debounce search as user types
+    int maxResultsVal;
+    bool closeOnExecuteVal;
+    bool isShownVal;
+    QString currentQueryStr;
+    mutable QMutex mutex; // Protect access to command list during async operations
 
-    int searchDelayMs;
-    QTimer* searchTimer;
+    // Helper to filter commands based on the current query string
+    void filterCommands(const QString& query) {
+        QMutexLocker locker(&mutex); // Lock during read of command list and filtering
+        QStringList results;
 
-    // Helper to populate the initial command list
-    void populateCommands();
+        if (query.isEmpty()) {
+            // If query is empty, show top-level categories or most frequent commands
+            QSet<QString> categories;
+            for (const auto& cmd : allCommands) {
+                categories.insert(cmd.category);
+            }
+            for (const QString& cat : categories) {
+                results.append(cat + " (Category)");
+            }
+        } else {
+            // Simple fuzzy search across title, category, description
+            QString lowerQuery = query.toLower();
+            QList<Command> matchedCommands;
+            for (const auto& cmd : allCommands) {
+                if (cmd.title.toLower().contains(lowerQuery) ||
+                    cmd.category.toLower().contains(lowerQuery) ||
+                    cmd.description.toLower().contains(lowerQuery)) {
+                    matchedCommands.append(cmd);
+                }
+            }
 
-    // Helper to filter commands based on search text
-    void filterCommands(const QString& searchText);
+            // Sort results: prioritize by priority, then by title
+            std::sort(matchedCommands.begin(), matchedCommands.end(), [](const Command& a, const Command& b) {
+                if (a.priority != b.priority) {
+                    return a.priority > b.priority; // Higher priority first
+                }
+                return a.title.localeAwareCompare(b.title) < 0; // Alphabetical
+            });
 
-    // Helper to update the results list
-    void updateResultsList();
+            // Take up to maxResults
+            int count = qMin(matchedCommands.size(), maxResultsVal);
+            for (int i = 0; i < count; ++i) {
+                const Command& cmd = matchedCommands[i];
+                // Format result item text
+                QString itemText = QString("%1 (%2)").arg(cmd.title).arg(cmd.category);
+                if (!cmd.shortcut.isEmpty()) {
+                    itemText += QString(" [%1]").arg(cmd.shortcut);
+                }
+                results.append(itemText);
+            }
+        }
 
-    // Helper to execute a command
-    void executeCommand(int index);
+        // Set the filtered results to the proxy model
+        static_cast<QStringListModel*>(proxyModel->sourceModel())->setStringList(results);
+
+        // Update the internal list of *matched* commands for execution mapping
+        // This needs a better design - the model should ideally store Command structs, not just strings.
+        // For now, we'll rebuild a map of *filtered* commands on the fly.
+        // A more robust approach uses a custom QAbstractListModel storing Command objects.
+        currentFilteredCommands.clear();
+        if (query.isEmpty()) {
+             // Show categories - this logic needs refinement. For now, add all commands if query is empty.
+             currentFilteredCommands = allCommands;
+        } else {
+             // Use the matchedCommands list from above
+             // (This logic is duplicated from filtering, inefficient but simple for now)
+             QString lowerQuery = query.toLower();
+             for (const auto& cmd : allCommands) {
+                 if (cmd.title.toLower().contains(lowerQuery) ||
+                     cmd.category.toLower().contains(lowerQuery) ||
+                     cmd.description.toLower().contains(lowerQuery)) {
+                     currentFilteredCommands.append(cmd);
+                 }
+             }
+             // Apply same sorting as above
+             std::sort(currentFilteredCommands.begin(), currentFilteredCommands.end(), [](const Command& a, const Command& b) {
+                 if (a.priority != b.priority) {
+                     return a.priority > b.priority;
+                 }
+                 return a.title.localeAwareCompare(b.title) < 0;
+             });
+             currentFilteredCommands = currentFilteredCommands.mid(0, maxResultsVal);
+        }
+
+        emit q->resultsChanged(results.size());
+        LOG_DEBUG("CommandPalette: Filtered to " << results.size() << " commands for query: '" << query << "'");
+    }
+
+    // List of currently filtered commands (subset of allCommands matching the query)
+    QList<Command> currentFilteredCommands;
 };
 
-void CommandPalette::Private::populateCommands() {
-    // This is where we would register all available commands in the application.
-    // For now, we'll add some example commands.
-    // In a real application, this would likely be done by the main application or UI manager
-    // when commands are registered globally.
+// Static instance pointer
+CommandPalette* CommandPalette::s_instance = nullptr;
 
-    // File Commands
-    allCommands.append(Command("file.new", "New Document", "File", "Create a new document", "Ctrl+N", []() { LOG_INFO("Command Palette: New Document"); }));
-    allCommands.append(Command("file.open", "Open Document...", "File", "Open an existing document", "Ctrl+O", []() { LOG_INFO("Command Palette: Open Document"); }));
-    allCommands.append(Command("file.save", "Save Document", "File", "Save the current document", "Ctrl+S", []() { LOG_INFO("Command Palette: Save Document"); }));
-    allCommands.append(Command("file.print", "Print Document...", "File", "Print the current document", "Ctrl+P", []() { LOG_INFO("Command Palette: Print Document"); }));
-
-    // Edit Commands
-    allCommands.append(Command("edit.undo", "Undo", "Edit", "Undo the last action", "Ctrl+Z", []() { LOG_INFO("Command Palette: Undo"); }));
-    allCommands.append(Command("edit.redo", "Redo", "Edit", "Redo the last undone action", "Ctrl+Y", []() { LOG_INFO("Command Palette: Redo"); }));
-    allCommands.append(Command("edit.find", "Find...", "Edit", "Find text in the document", "Ctrl+F", []() { LOG_INFO("Command Palette: Find"); }));
-    allCommands.append(Command("edit.copy", "Copy", "Edit", "Copy selected content", "Ctrl+C", []() { LOG_INFO("Command Palette: Copy"); }));
-    allCommands.append(Command("edit.paste", "Paste", "Edit", "Paste content from clipboard", "Ctrl+V", []() { LOG_INFO("Command Palette: Paste"); }));
-
-    // View Commands
-    allCommands.append(Command("view.zoom_in", "Zoom In", "View", "Increase the zoom level", "Ctrl++", []() { LOG_INFO("Command Palette: Zoom In"); }));
-    allCommands.append(Command("view.zoom_out", "Zoom Out", "View", "Decrease the zoom level", "Ctrl+-", []() { LOG_INFO("Command Palette: Zoom Out"); }));
-    allCommands.append(Command("view.fit_page", "Fit Page", "View", "Fit the entire page to the window", "Ctrl+0", []() { LOG_INFO("Command Palette: Fit Page"); }));
-    allCommands.append(Command("view.fullscreen", "Toggle Fullscreen", "View", "Toggle full screen mode", "F11", []() { LOG_INFO("Command Palette: Toggle Fullscreen"); }));
-
-    // Settings Commands
-    allCommands.append(Command("settings.preferences", "Preferences...", "Settings", "Modify application settings", "", []() { LOG_INFO("Command Palette: Preferences"); }));
-
-    // Help Commands
-    allCommands.append(Command("help.about", "About QuantilyxDoc", "Help", "Show information about QuantilyxDoc", "", []() { LOG_INFO("Command Palette: About"); }));
-
-    LOG_INFO("Populated command palette with " << allCommands.size() << " commands.");
-}
-
-void CommandPalette::Private::filterCommands(const QString& searchText) {
-    filteredCommands.clear();
-    QString lowerSearch = searchText.toLower();
-
-    for (const auto& cmd : allCommands) {
-        // Simple matching: check title, category, description
-        if (cmd.title.toLower().contains(lowerSearch) ||
-            cmd.category.toLower().contains(lowerSearch) ||
-            cmd.description.toLower().contains(lowerSearch)) {
-            filteredCommands.append(cmd);
-        }
+CommandPalette& CommandPalette::instance()
+{
+    if (!s_instance) {
+        s_instance = new CommandPalette();
     }
-
-    // Sort by priority and then by title
-    std::sort(filteredCommands.begin(), filteredCommands.end(), [](const Command& a, const Command& b) {
-        if (a.priority != b.priority) {
-            return a.priority > b.priority; // Higher priority first
-        }
-        return a.title < b.title; // Alphabetical for same priority
-    });
-}
-
-void CommandPalette::Private::updateResultsList() {
-    resultsListWidget->clear();
-    for (const auto& cmd : filteredCommands) {
-        QListWidgetItem* item = new QListWidgetItem();
-        item->setText(QString("%1 (%2)").arg(cmd.title).arg(cmd.category));
-        if (!cmd.description.isEmpty()) {
-            item->setToolTip(cmd.description); // Show description as tooltip
-        }
-        if (!cmd.shortcut.isEmpty()) {
-            // Append shortcut to text or use setData for custom display
-            item->setText(item->text() + QString("  (%1)").arg(cmd.shortcut));
-        }
-        if (!cmd.icon.isNull()) {
-            item->setIcon(cmd.icon);
-        }
-        resultsListWidget->addItem(item);
-    }
-    LOG_DEBUG("Updated command palette results list with " << filteredCommands.size() << " items.");
-}
-
-void CommandPalette::Private::executeCommand(int index) {
-    if (index >= 0 && index < filteredCommands.size()) {
-        const Command& cmd = filteredCommands[index];
-        LOG_INFO("Executing command from palette: " << cmd.id << " - " << cmd.title);
-        if (cmd.handler) {
-            cmd.handler(); // Call the associated function
-        }
-        // Optionally, hide the palette after execution
-        q->hide();
-    }
+    return *s_instance;
 }
 
 CommandPalette::CommandPalette(QWidget* parent)
-    : QWidget(parent)
+    : QWidget(parent, Qt::Popup) // Make it a popup window
     , d(new Private(this))
 {
-    setWindowFlags(Qt::Popup | Qt::FramelessWindowHint); // Popup window without frame
-    setAttribute(Qt::WA_TranslucentBackground); // Allow custom background painting
+    setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint); // Ensure it behaves like a palette
+    setAttribute(Qt::WA_TranslucentBackground); // Allow custom background painting if desired
 
-    // Layout
+    // Main layout
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(10, 10, 10, 10); // Add some padding
+    mainLayout->setContentsMargins(10, 10, 10, 10);
 
     // Search input
     d->searchLineEdit = new QLineEdit(this);
-    d->searchLineEdit->setPlaceholderText(tr("Type a command or search..."));
-    d->searchLineEdit->setFocus(); // Start with focus on the search box
+    d->searchLineEdit->setPlaceholderText(tr("Type a command..."));
+    d->searchLineEdit->setClearButtonEnabled(true);
     mainLayout->addWidget(d->searchLineEdit);
 
     // Results list
+    d->listModel = new QStringListModel(this); // Simple string list for now
+    d->proxyModel = new QSortFilterProxyModel(this);
+    d->proxyModel->setSourceModel(d->listModel);
+    // d->proxyModel->setFilterCaseSensitivity(Qt::CaseInsensitive); // Filter is done manually in filterCommands
+    // d->proxyModel->setFilterKeyColumn(-1); // Filter all columns (or just 0 if using custom model)
+
     d->resultsListWidget = new QListWidget(this);
-    d->resultsListWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); // Keep it simple
-    d->resultsListWidget->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    d->resultsListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    d->resultsListWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
-    d->resultsListWidget->setFrameStyle(QFrame::NoFrame); // Remove default frame if desired
+    d->resultsListWidget->setModel(d->proxyModel);
+    d->resultsListWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     mainLayout->addWidget(d->resultsListWidget);
 
-    // Placeholder label (optional, shown when no results)
+    // Placeholder label (shown when no results)
     d->placeholderLabel = new QLabel(tr("No commands found"), this);
     d->placeholderLabel->setAlignment(Qt::AlignCenter);
-    d->placeholderLabel->hide(); // Hidden by default
+    d->placeholderLabel->hide(); // Hidden initially, shown by filterResults if necessary
     mainLayout->addWidget(d->placeholderLabel);
 
-    // Set up search delay timer
-    d->searchTimer = new QTimer(this);
-    d->searchTimer->setSingleShot(true);
-    connect(d->searchTimer, &QTimer::timeout, [this]() {
+    // Debounce timer for search
+    d->searchDebounceTimer = new QTimer(this);
+    d->searchDebounceTimer->setSingleShot(true);
+    connect(d->searchDebounceTimer, &QTimer::timeout, [this]() {
         d->filterCommands(d->searchLineEdit->text());
-        d->updateResultsList();
-        d->resultsListWidget->setCurrentRow(0); // Select first result
-        // Show/hide placeholder
-        d->placeholderLabel->setVisible(d->filteredCommands.isEmpty());
-        d->resultsListWidget->setVisible(!d->filteredCommands.isEmpty());
     });
 
-    // Connect search input to filtering
+    // Connect search box changes
     connect(d->searchLineEdit, &QLineEdit::textChanged, [this](const QString& text) {
-        d->searchTimer->stop(); // Cancel previous delayed search
-        d->searchTimer->start(d->searchDelayMs); // Start new delayed search
+        d->currentQueryStr = text;
+        d->searchDebounceTimer->start(150); // Wait 150ms after user stops typing
+        emit queryChanged(text);
     });
 
-    // Connect list item selection/activation
-    connect(d->resultsListWidget, &QListWidget::itemActivated, [this](QListWidgetItem* item) {
-        int index = d->resultsListWidget->row(item);
-        d->executeCommand(index);
+    // Connect list item activation (click or Enter)
+    connect(d->resultsListWidget, &QListWidget::activated, [this](const QModelIndex& index) {
+        int sourceRow = d->proxyModel->mapToSource(index).row();
+        if (sourceRow >= 0 && sourceRow < d->currentFilteredCommands.size()) {
+            const Command& cmd = d->currentFilteredCommands[sourceRow];
+            executeCommand(cmd);
+        }
     });
 
-    // Connect Enter key press in search box to execute selected command
+    // Connect Enter key press in search box to activate selected item
     connect(d->searchLineEdit, &QLineEdit::returnPressed, [this]() {
-        int currentRow = d->resultsListWidget->currentRow();
-        if (currentRow >= 0) {
-            d->executeCommand(currentRow);
+        if (d->resultsListWidget->currentIndex().isValid()) {
+            // Trigger the activated signal for the current index
+            d->resultsListWidget->activated(d->resultsListWidget->currentIndex());
+        } else {
+            // If no item is selected, try to execute the first result if available
+            if (!d->currentFilteredCommands.isEmpty()) {
+                executeCommand(d->currentFilteredCommands[0]);
+            }
         }
     });
 
     // Connect Escape key to hide the palette
-    connect(d->searchLineEdit, &QLineEdit::textChanged, [this](const QString& text) {
-        if (text.isEmpty() && !d->searchLineEdit->hasFocus()) {
-             // Maybe hide if text is cleared and focus is lost? Or just on Esc key.
-             // Let's handle Esc in keyPressEvent.
+    connect(d->searchLineEdit, &QLineEdit::keyPressed, [this](QKeyEvent* event) {
+        if (event->key() == Qt::Key_Escape) {
+            hidePalette();
+            event->accept();
         }
     });
 
-    // Populate initial commands
-    d->populateCommands();
-    d->filterCommands(""); // Show all commands initially
-    d->updateResultsList();
+    // Initially hide the palette
+    hide();
 
     LOG_INFO("CommandPalette initialized.");
 }
@@ -246,54 +246,238 @@ CommandPalette::~CommandPalette()
     LOG_INFO("CommandPalette destroyed.");
 }
 
-void CommandPalette::showEvent(QShowEvent* event)
+void CommandPalette::showPalette()
 {
-    QWidget::showEvent(event);
-    d->searchLineEdit->setFocus(); // Ensure search box has focus when shown
-    d->searchLineEdit->selectAll(); // Select all text for easy replacement
+    // Center on parent or primary screen
+    QWidget* parentWidget = parentWidget();
+    QRect screenGeometry;
+    if (parentWidget) {
+        screenGeometry = parentWidget->screen()->availableGeometry();
+    } else {
+        screenGeometry = QApplication::primaryScreen()->availableGeometry();
+    }
+
+    int x = screenGeometry.center().x() - width() / 2;
+    int y = screenGeometry.center().y() - height() / 2;
+    move(x, y);
+
+    show();
+    d->isShownVal = true;
+    d->searchLineEdit->setFocus();
+    d->searchLineEdit->selectAll(); // Clear any existing text or select all for easy replacement
+    emit paletteShown();
     LOG_DEBUG("CommandPalette shown.");
+}
+
+void CommandPalette::hidePalette()
+{
+    hide();
+    d->isShownVal = false;
+    // Optionally, return focus to the previous widget
+    if (QWidget* previousFocus = QApplication::focusWidget()) {
+        previousFocus->setFocus();
+    }
+    emit paletteHidden();
+    LOG_DEBUG("CommandPalette hidden.");
+}
+
+bool CommandPalette::isShown() const
+{
+    return d->isShownVal;
+}
+
+void CommandPalette::addCommand(const QString& id, const QString& title, const QString& category, const QString& description, const QString& shortcut, std::function<void()> handler, const QIcon& icon, int priority)
+{
+    QMutexLocker locker(&d->mutex);
+
+    // Check for duplicates
+    auto existingCmdIt = std::find_if(d->allCommands.begin(), d->allCommands.end(),
+                                      [&id](const Command& cmd) { return cmd.id == id; });
+    if (existingCmdIt != d->allCommands.end()) {
+        LOG_WARN("CommandPalette::addCommand: Command with ID already exists, overwriting: " << id);
+        *existingCmdIt = Command{id, title, category, description, shortcut, std::move(handler), icon, priority};
+    } else {
+        d->allCommands.append(Command{id, title, category, description, shortcut, std::move(handler), icon, priority});
+        d->commandMap.insert(id, d->allCommands.back()); // Update map
+    }
+
+    // If the palette is currently visible and the query matches, update the list
+    if (isShown() && d->currentQueryStr.isEmpty()) { // Simple update if query is empty
+        d->filterCommands(d->currentQueryStr);
+    }
+
+    LOG_DEBUG("CommandPalette: Added command '" << title << "' (ID: " << id << ")");
+}
+
+void CommandPalette::removeCommand(const QString& id)
+{
+    QMutexLocker locker(&d->mutex);
+
+    auto it = std::find_if(d->allCommands.begin(), d->allCommands.end(),
+                           [&id](const Command& cmd) { return cmd.id == id; });
+    if (it != d->allCommands.end()) {
+        d->allCommands.erase(it);
+        d->commandMap.remove(id);
+        LOG_DEBUG("CommandPalette: Removed command (ID: " << id << ")");
+
+        // Update list if visible
+        if (isShown()) {
+            d->filterCommands(d->currentQueryStr);
+        }
+    } else {
+        LOG_WARN("CommandPalette::removeCommand: Command ID not found: " << id);
+    }
+}
+
+QList<Command> CommandPalette::allCommands() const
+{
+    QMutexLocker locker(&d->mutex);
+    return d->allCommands; // Returns a copy
+}
+
+QList<Command> CommandPalette::searchCommands(const QString& query) const
+{
+    QMutexLocker locker(&d->mutex);
+    // Re-implement the search logic from filterCommands to return the actual Command objects
+    QList<Command> results;
+    QString lowerQuery = query.toLower();
+
+    for (const auto& cmd : d->allCommands) {
+        if (cmd.title.toLower().contains(lowerQuery) ||
+            cmd.category.toLower().contains(lowerQuery) ||
+            cmd.description.toLower().contains(lowerQuery)) {
+            results.append(cmd);
+        }
+    }
+
+    // Sort results: prioritize by priority, then by title
+    std::sort(results.begin(), results.end(), [](const Command& a, const Command& b) {
+        if (a.priority != b.priority) {
+            return a.priority > b.priority;
+        }
+        return a.title.localeAwareCompare(b.title) < 0;
+    });
+
+    // Limit results
+    if (results.size() > d->maxResultsVal) {
+        results = results.mid(0, d->maxResultsVal);
+    }
+
+    return results;
+}
+
+void CommandPalette::clearCommands()
+{
+    QMutexLocker locker(&d->mutex);
+    d->allCommands.clear();
+    d->commandMap.clear();
+    d->currentFilteredCommands.clear();
+    d->listModel->setStringList(QStringList()); // Clear the UI model
+    LOG_DEBUG("CommandPalette: Cleared all commands.");
+}
+
+QString CommandPalette::currentQuery() const
+{
+    QMutexLocker locker(&d->mutex);
+    return d->currentQueryStr;
+}
+
+void CommandPalette::setMaxResults(int maxCount)
+{
+    if (maxCount > 0) {
+        QMutexLocker locker(&d->mutex);
+        if (d->maxResultsVal != maxCount) {
+            d->maxResultsVal = maxCount;
+            LOG_INFO("CommandPalette: Max results set to " << maxCount);
+            if (isShown()) {
+                d->filterCommands(d->currentQueryStr); // Re-filter with new limit
+            }
+        }
+    }
+}
+
+int CommandPalette::maxResults() const
+{
+    QMutexLocker locker(&d->mutex);
+    return d->maxResultsVal;
+}
+
+void CommandPalette::setCloseOnExecute(bool close)
+{
+    QMutexLocker locker(&d->mutex);
+    d->closeOnExecuteVal = close;
+    LOG_DEBUG("CommandPalette: Close on execute set to " << close);
+}
+
+bool CommandPalette::closeOnExecute() const
+{
+    QMutexLocker locker(&d->mutex);
+    return d->closeOnExecuteVal;
+}
+
+void CommandPalette::executeCommandById(const QString& commandId)
+{
+    QMutexLocker locker(&d->mutex);
+    auto it = d->commandMap.constFind(commandId);
+    if (it != d->commandMap.constEnd()) {
+        executeCommand(it.value());
+    } else {
+        LOG_WARN("CommandPalette::executeCommandById: Command ID not found: " << commandId);
+    }
+}
+
+void CommandPalette::executeCommand(const Command& cmd)
+{
+    LOG_INFO("CommandPalette: Executing command '" << cmd.title << "' (ID: " << cmd.id << ")");
+    if (cmd.handler) {
+        cmd.handler(); // Execute the associated function
+    }
+    emit commandExecuted(cmd.id);
+
+    if (d->closeOnExecuteVal) {
+        hidePalette(); // Close the palette after execution if configured
+    }
+}
+
+void CommandPalette::onSearchEditTextChanged(const QString& text)
+{
+    // Handled by the signal connection to the debounce timer in constructor
+    Q_UNUSED(text);
+}
+
+void CommandPalette::onResultListCurrentItemChanged()
+{
+    // Could highlight the command details in a separate area if added
+}
+
+void CommandPalette::onResultListActivated()
+{
+    // Handled by the signal connection in constructor
 }
 
 void CommandPalette::keyPressEvent(QKeyEvent* event)
 {
-    // Handle navigation keys
-    switch (event->key()) {
-        case Qt::Key_Down:
-            if (d->resultsListWidget->count() > 0) {
-                int currentRow = d->resultsListWidget->currentRow();
-                d->resultsListWidget->setCurrentRow(qMin(currentRow + 1, d->resultsListWidget->count() - 1));
-            }
-            event->accept();
-            return;
-        case Qt::Key_Up:
-            if (d->resultsListWidget->count() > 0) {
-                int currentRow = d->resultsListWidget->currentRow();
-                d->resultsListWidget->setCurrentRow(qMax(currentRow - 1, 0));
-            }
-            event->accept();
-            return;
-        case Qt::Key_Escape:
-            hide(); // Close the palette
-            event->accept();
-            return;
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            // Already handled by returnPressed signal, but catch here if needed for other logic
-            int currentRow = d->resultsListWidget->currentRow();
-            if (currentRow >= 0) {
-                d->executeCommand(currentRow);
-            }
-            event->accept();
-            return;
-        // Add other keys if needed
+    // Handle navigation keys if the list has focus but search box doesn't
+    if (event->key() == Qt::Key_Escape) {
+        hidePalette();
+        event->accept();
+        return;
+    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        // Handled by QLineEdit's returnPressed signal and QListWidget's activated signal
+        // QWidget::keyPressEvent(event); // Let base class handle it if needed elsewhere
+        return;
+    } else if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
+        // Let the QListWidget handle navigation
+        d->resultsListWidget->setFocus(); // Ensure list handles the keys
+        // QWidget::keyPressEvent(event); // Let base class handle it
+        return;
     }
-    // Let base class handle other keys or pass to search box
     QWidget::keyPressEvent(event);
 }
 
 void CommandPalette::paintEvent(QPaintEvent* event)
 {
-    // Draw a custom background with rounded corners and shadow
+    // Paint a custom background if desired (e.g., rounded corners, shadow)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
@@ -302,59 +486,7 @@ void CommandPalette::paintEvent(QPaintEvent* event)
     opt.initFrom(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &painter, this);
 
-    // Draw a subtle shadow or border if desired
-    // painter.setPen(QPen(QColor(0, 0, 0, 50), 1)); // Light shadow color
-    // painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 5, 5); // Slightly inset rect
-
     QWidget::paintEvent(event);
-}
-
-void CommandPalette::showAtCenter(QWidget* parentWidget)
-{
-    if (!parentWidget) {
-        LOG_WARN("CommandPalette::showAtCenter: parent widget is null.");
-        return;
-    }
-
-    // Calculate position to center over the parent
-    QRect parentRect = parentWidget->geometry();
-    QPoint globalPoint = parentWidget->mapToGlobal(parentRect.center());
-    globalPoint -= QPoint(width() / 2, height() / 2); // Adjust for own size
-
-    // Ensure it stays within screen bounds
-    QRect screenRect = QApplication::desktop()->availableGeometry(parentWidget);
-    globalPoint.setX(qMax(screenRect.left(), qMin(globalPoint.x(), screenRect.right() - width())));
-    globalPoint.setY(qMax(screenRect.top(), qMin(globalPoint.y(), screenRect.bottom() - height())));
-
-    move(globalPoint);
-    show();
-    LOG_DEBUG("CommandPalette shown at center of parent widget.");
-}
-
-void CommandPalette::addCommand(const QString& id, const QString& title, const QString& category, const QString& description, const QString& shortcut, std::function<void()> handler, const QIcon& icon, int priority)
-{
-    d->allCommands.append(Command(id, title, category, description, shortcut, std::move(handler), icon, priority));
-    LOG_DEBUG("Added command to palette: " << id << " - " << title);
-    // If the palette is currently visible and showing all commands, update the list
-    if (isVisible() && d->searchLineEdit->text().isEmpty()) {
-        d->filterCommands(""); // Re-filter with empty string
-        d->updateResultsList();
-    }
-}
-
-void CommandPalette::removeCommand(const QString& id)
-{
-    auto it = std::find_if(d->allCommands.begin(), d->allCommands.end(),
-                           [&id](const Command& cmd) { return cmd.id == id; });
-    if (it != d->allCommands.end()) {
-        d->allCommands.erase(it);
-        LOG_DEBUG("Removed command from palette: " << id);
-        // Update list if visible
-        if (isVisible()) {
-            d->filterCommands(d->searchLineEdit->text()); // Re-filter current search
-            d->updateResultsList();
-        }
-    }
 }
 
 } // namespace QuantilyxDoc
